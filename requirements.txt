@@ -1,0 +1,29 @@
+# OCR
+easyocr
+
+# Transformers and model inference
+transformers
+accelerate
+
+# PyTorch (GPU, CUDA 12.6, Python 3.10)
+# These wheels must be present in ./wheels:
+# torch-2.3.0+cu126-cp310-cp310-win_amd64.whl
+# torchvision-0.18.0+cu126-cp310-cp310-win_amd64.whl
+# torchaudio-2.3.0+cu126-cp310-cp310-win_amd64.whl
+torch
+torchvision
+torchaudio
+
+# Web framework and server
+fastapi
+uvicorn
+python-multipart
+
+# Image processing
+Pillow
+
+# Additional dependencies
+numpy
+opencv-python
+ultralytics
+deskew

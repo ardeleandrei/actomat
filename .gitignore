@@ -1,0 +1,33 @@
+# Python and venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+.env
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python distribution / packaging
+build/
+dist/
+*.egg-info/
+*.whl
+wheels/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Models and generated files
+models/
+*.png
+
+# Other system files
+.DS_Store
+.idea/
+.vscode/
+*.log
