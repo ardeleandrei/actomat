@@ -1,5 +1,6 @@
 # OCR
-easyocr
+paddleocr
+paddlepaddle
 
 # Transformers and model inference
 transformers
@@ -27,3 +28,4 @@ numpy
 opencv-python
 ultralytics
 deskew
+

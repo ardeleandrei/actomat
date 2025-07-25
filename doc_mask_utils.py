@@ -4,11 +4,11 @@ from PIL import Image
 import io
 from PIL import ImageDraw
 from deskew import determine_skew
+import pytesseract
 
 from ultralytics import YOLO  # pip install ultralytics
 
 model = YOLO("./models/yolov8l.pt")
-
 def detect_skew_angle(image_np):
     """
     Estimate skew angle of text in the image using Hough lines on edges.
@@ -110,7 +110,7 @@ def crop_and_remove_code(raw_bytes, margin_percent=0.03, fill_color=(255,255,255
     erase_left = person_x1 + int(photo_height * 2.2)  # start 2.2× photo height right of photo left edge
     erase_right = erase_left + int(w * 0.15)          # width ~15% of image width
 
-    erase_top = person_y1 + int(photo_height * 0.13)   # start 0.13x of photo top
+    erase_top = person_y1 + int(photo_height * 0.11)   # start 0.11x of photo top
     erase_bottom = erase_top + int(photo_height * 0.25)  # cover top 25% of photo height
 
     # Clamp erase box within cropped image boundaries
@@ -122,17 +122,26 @@ def crop_and_remove_code(raw_bytes, margin_percent=0.03, fill_color=(255,255,255
     if erase_right > erase_left and erase_bottom > erase_top:
         draw = ImageDraw.Draw(cropped_img)
         draw.rectangle([erase_left, erase_top, erase_right, erase_bottom], fill=fill_color)
+                # Calculate and draw additional white box above the existing one
+        middle_x = (erase_left + erase_right) // 2
+        middle_y = (erase_top + erase_bottom) // 2
+
+        extra_box_left = middle_x
+        extra_box_top = 0
+        extra_box_right = cropped_img.width
+        extra_box_bottom = middle_y
+
+        draw.rectangle([extra_box_left, extra_box_top, extra_box_right, extra_box_bottom], fill=fill_color)
+
     else:
         print("Erase box invalid or zero area, skipping erase")
 
-    # --- New crop to remove bottom starting from y2 + 30% photo height ---
-    crop_start_y = y2 + int(photo_height * 0.3)
-    crop_start_y = min(crop_start_y, h)  # Clamp to image height
+    # --- Final vertical crop: keep only the region between top and bottom limits ---
+    crop_top_y = max(person_y1 - int(photo_height * 0.1), 0)
+    crop_bottom_y = min(y2 + int(photo_height * 0.3), h)
 
-    # Crop the image vertically, remove from crop_start_y to bottom
-    # Adjust crop_start_y relative to cropped image top (which is 0 vertically)
-    # Since we cropped horizontally only, vertical indices remain the same.
-    cropped_img = cropped_img.crop((0, 0, cropped_img.width, crop_start_y))
+    # Apply vertical crop between these limits
+    cropped_img = cropped_img.crop((0, crop_top_y, cropped_img.width, crop_bottom_y))
 
     return cropped_img, [x1, y1, x2, y2], distance_pixels, percent_from_right
 

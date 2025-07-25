@@ -9,7 +9,7 @@ import io
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import easyocr
+from paddleocr import PaddleOCR
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 import torch
 from doc_mask_utils import crop_and_remove_code
@@ -29,7 +29,12 @@ print(f"[INIT] Model first parameter device: {next(model.parameters()).device}")
 print(f"[INIT] CUDA available: {torch.cuda.is_available()}")
 print(f"[INIT] Model device map: {model.device_map if hasattr(model, 'device_map') else 'N/A'}")
 
-ocr = easyocr.Reader(['ro'], gpu=torch.cuda.is_available())
+ocr = PaddleOCR(
+    lang='ro',
+    det_db_box_thresh=0.3,
+    enable_mkldnn=True
+)
+
 
 # Example usage
 # result = ocr.ocr(your_image_path, cls=True)
@@ -43,20 +48,22 @@ def preprocess_image(raw_bytes, max_dim=1600, min_dim_for_upscale=900):
     image = ImageOps.exif_transpose(image)
     w, h = image.size
 
-    # Upscale if smallest dimension is very small (ex: scan prost, poza mică)
     if min(w, h) < min_dim_for_upscale:
-        scale = 2
+        scale = 4
         image = image.resize((w*scale, h*scale), Image.LANCZOS)
         w, h = image.size
 
-    # Downscale if it's too big for OCR pipeline (ex: poza de 6000px)
     scale = max(w, h) / max_dim if max(w, h) > max_dim else 1
     if scale > 1:
         image = image.resize((int(w/scale), int(h/scale)), Image.LANCZOS)
 
     image = image.convert("L")
     image = ImageOps.autocontrast(image)
+    image = ImageEnhance.Contrast(image).enhance(2.2)
     image = image.filter(ImageFilter.SHARPEN)
+    image = image.filter(ImageFilter.DETAIL)
+    image = image.filter(ImageFilter.MedianFilter(size=3))
+
     out_bytes = io.BytesIO()
     image.save(out_bytes, format="PNG")
     out_bytes.seek(0)
@@ -69,53 +76,24 @@ def preprocess_image_variant2(raw_bytes, max_dim=1600, min_dim_for_upscale=900):
 
     if min(w, h) < min_dim_for_upscale:
         scale = 3
-        image = image.resize((w*scale, h*scale), Image.LANCZOS)
+        image = image.resize((w * scale, h * scale), Image.LANCZOS)
         w, h = image.size
 
     scale = max(w, h) / max_dim if max(w, h) > max_dim else 1
     if scale > 1:
-        image = image.resize((int(w/scale), int(h/scale)), Image.LANCZOS)
+        image = image.resize((int(w / scale), int(h / scale)), Image.LANCZOS)
 
     image = image.convert("L")
     image = ImageOps.autocontrast(image)
+    image = ImageEnhance.Contrast(image).enhance(1.6)  # Less aggressive than variant 3
     image = image.filter(ImageFilter.SHARPEN)
+    image = image.filter(ImageFilter.EDGE_ENHANCE)     # Different sharpening than variant 3
+
     out_bytes = io.BytesIO()
     image.save(out_bytes, format="PNG")
     out_bytes.seek(0)
     return out_bytes
 
-import re
-
-def clean_ocr_output(ocr_text):
-    # Fix common character distortions
-    ocr_text = ocr_text.replace("ROMAITJTF", "ROMÂNIA")  # Example of custom replacement
-    ocr_text = ocr_text.replace("ROMANIJTE", "ROMÂNIA")
-    ocr_text = ocr_text.replace("delDelivree", "Delivered by")
-    ocr_text = ocr_text.replace("parllssued", "Issued")
-    ocr_text = ocr_text.replace("CNP", "CNP")  # Ensure CNP remains the same
-    
-    # Remove unwanted characters or symbols
-    ocr_text = re.sub(r'[^a-zA-Z0-9ăîșțâĂÎȘȚÂ\.\,\(\)\-\s]', '', ocr_text)  # Remove non-alphanumeric chars except Romanian letters and common punctuation
-    
-    # Fix spacing issues (remove extra spaces or replace with a single space)
-    ocr_text = re.sub(r'\s+', ' ', ocr_text)
-    
-    # Replace distorted letters (e.g., OCR might detect 'I' as 'l' or 'J' as 'I')
-    ocr_text = ocr_text.replace("I", "J")  # Fix wrongly detected 'I' as 'J' in some cases
-    
-    # Handle missing accents in Romanian words
-    ocr_text = ocr_text.replace("Română", "Română")
-    ocr_text = ocr_text.replace("Maramureș", "Maramureș")
-    ocr_text = ocr_text.replace("Bistra", "Bistra")
-    
-    # Further cleanup (remove any remaining symbols or fix specific distortions)
-    ocr_text = ocr_text.replace("Sat. ", "Sat")  # Remove dots from 'Sat.'
-    ocr_text = re.sub(r'(\d)\s*(\d)', r'\1\2', ocr_text)  # Merge numbers with spaces (e.g., 448 -> 448)
-    
-    # Fix common incorrect abbreviations (e.g., 'Jud' should be 'Judet')
-    ocr_text = ocr_text.replace("Jud.", "Județ")
-    
-    return ocr_text.strip()
 
 def preprocess_image_variant3(raw_bytes, max_dim=1600, min_dim_for_upscale=900):
     image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
@@ -210,8 +188,17 @@ async def extract(file: UploadFile = File(...)):
     ocr_results = []
     for idx, preproc_img_bytes in enumerate([preprocessed1, preprocessed2, preprocessed3], start=1):
         preproc_img = Image.open(preproc_img_bytes).convert("RGB")
-        results = ocr.readtext(np.array(preproc_img))
-        lines = [item[1] for item in results if item[1].strip()]
+        results = ocr.predict(np.array(preproc_img))
+        ocr_lines = []
+
+        # results is a list of one dictionary
+        if results and isinstance(results[0], dict):
+            rec_texts = results[0].get("rec_texts", [])
+            for text in rec_texts:
+                if text.strip():
+                    ocr_lines.append(text.strip())
+
+        lines = ocr_lines
         ocr_text = " , ".join(lines)
         ocr_text = remove_5char_after_cnp(ocr_text)
         ocr_text = remove_items_with_lt(ocr_text)
@@ -222,22 +209,30 @@ async def extract(file: UploadFile = File(...)):
     # === LLM PROMPT: Compare all OCRs and extract best fields ===
     system_prompt = (
         "Ești un asistent care extrage date structurate din text OCR provenit din buletinul romanesc. "
-        "Asigură-te că folosești doar diacriticele corecte din limba română pentru literele cu accent ('ă', 'î', 'ș', 'ț', 'â', 'Ă', 'Î', 'Ș', 'Ț', 'Â') "
+        "OCR-ul poate contine erori, dar trebuie să extragi informații corecte."
+        "Considera ca textul poate contine artefacte cauzate de diacritice"
         "!!!Seria ('seria') este formată din exact 2 litere, iar numărul de serie ('nrSerie') este de obicei format din 6 cifre (poate fi uneori 5 sau 7). "
+        "Exemplu: dacă apare textul ,,SERIA XM NR 123456”, atunci: seria = XM, nrSerie = 123456"
         "Răspunde cu un obiect JSON cu următoarele câmpuri: "
-        "cnp, seria, nrSerie, sex, nume, prenume, nationalitate, loc_nastere, adresa_completa_domiciliu, emisa_de, valabilitate, strada, loc_domiciliu, judet_nastere, judet_domiciliu, apartament, numar, etaj, scara. "
+        "cnp, seria, nrSerie, sex, nume, prenume, nationalitate, loc_nastere, adresa_completa_domiciliu, emisa_de, valabilitate, strada, localitate_domiciliu, judet_nastere, judet_domiciliu, apartament, numar, etaj, scara. "
         "Dacă un câmp nu există în text, pune valoarea șir vid (''). Răspunde doar cu obiectul JSON, fără explicații. "
+        "Nu o sa gasesti nici 'seria' nici 'nrSerie' in CNP, deci nu le cauta acolo. "
+        "adresa_completa_domiciliu trebuie să conțină si localitatea, comuna, orasul sau municipiul, in functie de caz."
+        "ATENȚIE: Câmpul 'emisa_de' trebuie să conțină numele unui oraș sau municipiu sau a unei delimitări administrative care reprezinta instituția emitentă a buletinului."
         "Județul poate să apară în text ca 'județ' sau 'jud.' urmat de numele județului. Pentru câmpurile 'judet_nastere' și 'judet_domiciliu', răspunde doar cu codul județului sau cu numele județului fără prefixe, ex: 'Maramureș' in loc de 'Jud.Maramureș'. "
         "Încearcă să identifici corect județul separat de oraș sau municipiu. "
         "Pentru adresa_completa_domiciliu NU trebuie inclus orașul sau județul. "
         "!!! ATENȚIE: Dacă NU există un nume de stradă în adresă, iar adresa conține doar localitatea și numărul (ex: 'Sat. Crasna Viseului (Com. Bistra) nr 448'), câmpul 'strada' trebuie să fie șir vid (''). NU folosi numele localității pe post de stradă! "
         "!!! Dacă găsești 'nr' sau 'număr' urmat de cifre oriunde în adresa_completa_domiciliu, pune acea valoare în 'numar' indiferent dacă strada e prezentă sau nu. "
         "Dacă vezi litere care nu există în alfabetul limbii române sau cu accent greșit, corectează-le cu litera care se potrivește. "
-        "Ignoră orice linie care conține multe caractere '<' (MRZ), acestea nu sunt date valide. "
         "Simplifică nationalitatea într-un singur cuvânt dacă este posibil. "
-        "Primești trei variante OCR, toate rezultate pe baza aceleiași imagini dar cu preprocesări diferite. "
+        "Primești trei variante OCR, toate rezultate pe baza aceleași imagini dar cu preprocesări diferite. "
         "Compară fiecare item extras din cele trei variante și alege pentru fiecare câmp varianta care pare cea mai corectă sau completă, sau combină dacă este nevoie. "
+        "Daca o valoare cautata este la fel de lunga in 2 din 3 variante, alege acea varianta"
         "Dacă un câmp nu există în niciuna, pune șir vid (''). Răspunde doar cu obiectul JSON."
+        "Foloseste-ti cunostintele despre denumirile de străzi, orașe, județe și alte entități administrative din România, dar si terminatile obisnuite pentru numele de orase, comune, sate, străzi, dpdv. gramatical"
+        "Foloseste-ti cunostintele despre numele de familie si prenume românești"
+        "Judeca care este cea mai probabila varianta a numelui de familie in functie de localizarea geografica"
         "Răspunde doar cu obiectul JSON. NU adăuga explicații, nu folosi Markdown, nu adăuga nimic altceva decât obiectul JSON."
         "Return ONLY the JSON object. Do NOT add explanations, do NOT use Markdown, do NOT add anything else except the JSON object."
 
@@ -261,17 +256,23 @@ async def extract(file: UploadFile = File(...)):
         do_sample=False,
         return_full_text=False,
     )
-    response = outputs[0]['generated_text'].strip()
-
-    print("[API] Raw LLM output:")
+    response = outputs[0]['generated_text'].replace("<|im_start|>", "").replace("<|im_end|>", "").strip()
+    print("[API] Raw LLM output (cleaned):")
     print(response)
 
-    json_start = response.find('{')
-    json_end = response.rfind('}') + 1
-    if json_start != -1 and json_end > json_start:
-        json_part = response[json_start:json_end]
+    # Extract only the first valid JSON object
+    json_match = re.search(r'\{.*?\}', response, flags=re.DOTALL)
+    if json_match:
+        json_part = json_match.group(0)
     else:
-        json_part = response
+        json_part = response  # fallback to full string
+
+    # json_start = response.find('{')
+    # json_end = response.rfind('}') + 1
+    # if json_start != -1 and json_end > json_start:
+    #     json_part = response[json_start:json_end]
+    # else:
+    #     json_part = response
 
     try:
         data = json.loads(json_part)
@@ -284,25 +285,29 @@ async def extract(file: UploadFile = File(...)):
     # === LLM PROMPT 2 (if needed) ===
     required_fields = [
         "cnp", "seria", "nrSerie", "sex", "nume", "prenume", "nationalitate", "loc_nastere",
-        "adresa_completa_domiciliu", "emisa_de", "valabilitate", "loc_domiciliu",
+        "adresa_completa_domiciliu", "emisa_de", "valabilitate", "localitate_domiciliu",
         "judet_nastere", "judet_domiciliu"
     ]
-    needs_retry = isinstance(data, dict) and any(
-        data.get(field, "") == "" for field in required_fields
-    )
+    post_reasoning = True
 
-    if needs_retry:
-        print("[API] Empty fields detected. Running second LLM trial to complete missing fields using only JSON.")
+    if post_reasoning:
+        print("[API] Initiating post-reasoning")
         improve_prompt = (
-            "Ai primit deja un obiect JSON cu câteva câmpuri goale (''). "
-            "Încearcă să completezi câmpurile lipsă folosind doar datele deja extrase din celelalte câmpuri ale JSON-ului. "
-            "De exemplu, dacă 'adresa_completa_domiciliu' conține și numărul, dar 'numar' este gol, extrage numărul din adresă și completează-l în câmpul 'numar'. "
-            "!!! ATENȚIE: Dacă NU există un nume de stradă în adresă, iar adresa conține doar localitatea și numărul (ex: 'Sat. Crasna Viseului (Com. Bistra) nr 448'), câmpul 'strada' trebuie să fie șir vid (''). NU folosi numele localității pe post de stradă! "
-            "!!! Dacă găsești 'nr' sau 'număr' urmat de cifre oriunde în adresa_completa_domiciliu, pune acea valoare în 'numar' indiferent dacă strada e prezentă sau nu.\n"
-            "Returnează un nou obiect JSON cu aceleași câmpuri, completând tot ce se poate, fără explicații."
-            "Pentru câmpurile 'judet_nastere' și 'judet_domiciliu', răspunde doar cu codul județului sau cu numele județului fără prefixe, ex: 'Maramureș' in loc de 'Jud.Maramureș'.\n"
+            "Primești un obiect JSON cu câteva câmpuri cu informatii personale a unei persoane dintr-un document de identitate romanesc"
+            "Aceste campuri au fost completate anterior tot de tine folsind rezultatele unui OCR, dar s-ar putea sa existe greseli asa ca ti-am dat rezultatul tau ca sa faci o ultima verificare"
+            "Vei primi si rezultatele OCR pe care ai facut citirea initial"
+            "Verifica daca urmatoarele criterii au fost indeplinite"
+            "Criterii de indeplinit:"
+            "'adresa_completa_domiciliu' trebuie sa fie o adresa completa care de obicei are un numar de casa sau de apartament"
+            "Dacă campul 'adresa_completa_domiciliu' conține și numărul, dar campul 'numar' este gol, extrage numărul din adresă și completează-l în câmpul 'numar'. "
+            "Campul 'localitate_nastere' trebuie sa contina doar localitatea specificata in 'adresa_completa_domiciliu'"
+            "Dacă NU există un nume de stradă în adresă, iar adresa conține doar localitatea și numărul (ex: 'Sat. Crasna Viseului (Com. Bistra) nr 448'), câmpul 'strada' trebuie să fie șir vid (''). NU folosi numele localității pe post de stradă! "
+            "Dacă găsești 'nr' sau 'număr' urmat de cifre oriunde în adresa_completa_domiciliu, pune acea valoare în 'numar' indiferent dacă strada e prezentă sau nu."
+            "Returnează doar un nou obiect JSON corectat si nimic altceva"
             "/no-think\n"
-            f"JSON parțial:\n{json.dumps(data, ensure_ascii=False)}"
+            f"OCR intrare: {ocr_results[0]}, {ocr_results[1], {ocr_results[2]}}"
+            f"JSON intrare:\n{json.dumps(data, ensure_ascii=False)}\n"
+            "ATENTIE!!! Returnează doar un obiect JSON corectat si nimic altceva"
         )
         improve_full_prompt = (
             "<|im_start|>system\n" + improve_prompt + "<|im_end|>\n"
@@ -338,14 +343,34 @@ async def extract(file: UploadFile = File(...)):
             pass
 
 
+    # If the result includes <|im_start|> or <|im_end|>, remove it
+    if isinstance(data, str):
+        data = data.replace("<|im_start|>", "").replace("<|im_end|>", "")
+
 
     # Regex fallback for 'numar'
     if data.get("numar", "") == "" and data.get("adresa_completa_domiciliu", ""):
         adresa = data.get("adresa_completa_domiciliu", "")
-        import re
+        
         match = re.search(r'\b(?:nr\.?|număr)\s*(\d+)', adresa, flags=re.IGNORECASE)
         if match:
             data["numar"] = match.group(1)
             print(f"[API] Regex fallback: filled 'numar' with {data['numar']}")
+
+    # If 'adresa_completa_domiciliu' contains 'bl.' or 'bloc' set 'numar' to empty
+    if data.get("numar", "") != "":
+        adresa = data.get("adresa_completa_domiciliu", "").lower()
+        if "bl." in adresa or "bloc" in adresa:
+            data["numar"] = ""
+
+    # If seria is longer than 2 characters, truncate it
+    if len(data.get("seria", "")) > 2:
+        data["seria"] = data["seria"][:2]
+        print(f"[API] Truncated 'seria' to {data['seria']}")
+
+    # Ig CNP is longer than 13 characters, truncate it
+    if len(data.get("cnp", "")) > 13:
+        data["cnp"] = data["cnp"][:13]
+        print(f"[API] Truncated 'cnp' to {data['cnp']}")
 
     return data
