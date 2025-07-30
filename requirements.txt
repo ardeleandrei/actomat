@@ -5,6 +5,7 @@ paddlepaddle
 # Transformers and model inference
 transformers
 accelerate
+qwen_vl_utils
 
 # PyTorch (GPU, CUDA 12.6, Python 3.10)
 # These wheels must be present in ./wheels:
