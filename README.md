@@ -5,7 +5,7 @@ A FastAPI service that extracts structured fields from Romanian ID card images u
 ## Features
 - Local vision-language inference (no internet needed)
 - Auto-crops and rotates ID images to improve readability
-- **Self-correction**: If the model says surname/validity are not visible, rotates image up to 3 times and retries extraction
+- Self-correction: Since the model cannot read flipped documents and no reliable tool was found to automatically straighten them into the correct horizontal orientation, the service rotates the image up to 3 times and retries extraction until it can be read.
 - Iterative field extraction with context to reduce model errors
 - Special handling for Romanian-specific fields:
   - `judet_nastere` from place of birth
