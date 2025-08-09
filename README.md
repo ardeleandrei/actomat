@@ -34,3 +34,29 @@ Example:
   "etaj": "2",
   "scara": "A"
 }
+```
+
+## Requirements
+- Python 3.10+
+- GPU with CUDA recommended (works on CPU but slower)
+- Model folder at `./models/Qwen2.5-VL-7B-Instruct`
+
+Install dependencies:
+```bash
+pip install fastapi uvicorn pillow transformers torch accelerate paddleocr
+```
+
+Local modules required:
+- `doc_mask_utils.py` (crop/remove barcode, rotate)
+- `qwen_vl_utils.py` (process image input for model)
+- `prompts.py` (defines extraction prompts)
+
+## Run
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## Notes
+- Images larger than 1024px are resized to save VRAM
+- Self-correction rotates and retries up to 3 times if image is not readable
+- Debug images are saved in the working directory
