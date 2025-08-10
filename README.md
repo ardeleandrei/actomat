@@ -1,4 +1,4 @@
-# Romanian ID OCR & VLM Extractor
+# Romanian ID Multimodal Language Model Data Extractor
 
 A FastAPI service that extracts structured fields from Romanian ID card images using a local Qwen2.5-VL-7B-Instruct model.
 
